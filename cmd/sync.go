@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BYT0723/apix/qqmusic"
+	"github.com/BYT0723/tmusic/utils/log"
 	"github.com/spf13/cobra"
 )
 
@@ -31,8 +32,8 @@ to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		cb, err := os.ReadFile(cookiePath)
 		if err != nil {
-			fmt.Printf("[Error] 无法读取%s: %v\n", cookiePath, err)
-			return
+			log.Errorf("[Error] Cookie获取失败，无法读取%s: %v\n", cookiePath, err)
+			os.Exit(1)
 		}
 		cli, err := qqmusic.NewClient(string(bytes.TrimSpace(cb)))
 		cobra.CheckErr(err)
@@ -44,6 +45,7 @@ to quickly create a Cobra application.`,
 var (
 	songDir  string
 	lyricDir string
+	silent   bool
 )
 
 func init() {
@@ -61,33 +63,36 @@ func init() {
 
 	syncCmd.PersistentFlags().StringVar(&songDir, "song-dir", "./songs", "歌曲目录")
 	syncCmd.PersistentFlags().StringVar(&lyricDir, "lyric-dir", "./lyrics", "歌词目录")
+	syncCmd.PersistentFlags().BoolVarP(&silent, "silent", "s", false, "是否静默模式")
 }
 
 func syncUserSongList(cli *qqmusic.Client, songDir string, lyricDir string) {
 	if err := os.MkdirAll(songDir, os.ModePerm); err != nil {
-		fmt.Println("[Error] 无法创建歌曲目录:", err)
-		return
+		log.Errorf("[Error] 无法创建目录 %s : %v\n", songDir, err)
+		os.Exit(1)
 	}
 	if err := os.MkdirAll(lyricDir, os.ModePerm); err != nil {
-		fmt.Println("[Error] 无法创建歌曲目录:", err)
-		return
+		log.Errorf("[Error] 无法目录 %s : %v\n", lyricDir, err)
+		os.Exit(1)
 	}
 
 	sl, err := cli.GetUserSongList()
 	if err != nil {
-		fmt.Println("[Error] 获取用户歌单失败:", err)
+		log.Errorf("[Error] 获取用户歌单失败: %v\n", err)
 		return
 	}
 
 	for _, d := range sl.DissList {
-		downloadDiss(*cli, d)
+		if d.DirShow != 0 {
+			downloadDiss(*cli, d)
+		}
 	}
 }
 
-func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) {
+func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int) {
 	l, err := cli.GetSongList(d.Tid)
 	if err != nil {
-		fmt.Printf("歌单 %s 获取失败: %v\n", d.DissName, err)
+		log.Errorf("%s 歌单获取失败: %v\n", d.DissName, err)
 		return
 	}
 	if len(l.Cdlist) == 0 {
@@ -96,18 +101,29 @@ func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) {
 
 	sdir := filepath.Join(songDir, d.DissName)
 	if err := os.MkdirAll(sdir, os.ModePerm); err != nil {
-		fmt.Printf("歌单 %s 创建失败: %v\n", d.DissName, err)
+		log.Errorf("歌单 %s 创建失败: %v\n", d.DissName, err)
 		return
+	}
+
+	type result struct {
+		Song     string `json:"song,omitempty"`
+		Lyric    string `json:"lyric,omitempty"`
+		SongErr  error  `json:"song_err,omitempty"`
+		LyricErr error  `json:"lyric_err,omitempty"`
 	}
 
 	for _, v := range l.Cdlist {
 		for _, s := range v.Songlist {
 			var (
-				nameBuilder                         strings.Builder
-				n                                   = len(s.Singer)
-				st                                  = qqmusic.SongType320
-				dsErr, dlErr                        error
-				songStatus, lyricStatus             string = "OK", "OK"
+				nameBuilder strings.Builder
+
+				songname string
+				n        = len(s.Singer)
+				st       = qqmusic.SongType320
+				res      = result{
+					Song:  "OK",
+					Lyric: "OK",
+				}
 				songPath, lyricPath, lyricTransPath string
 			)
 
@@ -121,58 +137,82 @@ func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) {
 				}
 			}
 
-			songPath = filepath.Join(sdir, nameBuilder.String()+st.Suffix())
-			lyricPath = filepath.Join(lyricDir, nameBuilder.String()+".lrc")
-			lyricTransPath = filepath.Join(lyricDir, nameBuilder.String()+"_trans.lrc")
+			songname = strings.ReplaceAll(nameBuilder.String(), "/", " ")
+			songname = strings.ReplaceAll(songname, "\\", " ")
+
+			songPath = filepath.Join(sdir, songname+st.Suffix())
+			lyricPath = filepath.Join(lyricDir, songname+".lrc")
+			lyricTransPath = filepath.Join(lyricDir, songname+"_trans.lrc")
 
 			if _, err := os.Stat(songPath); os.IsNotExist(err) {
 				addr, err := cli.GetSongUrl(s.Songmid, s.StrMediaMid, st)
 				if err != nil {
-					fmt.Printf("%s 获取下载连接失败: %v\n", nameBuilder.String(), err)
+					log.Errorf("%s 获取下载连接失败: %v\n", songname, err)
 					continue
 				}
 
-				if dsErr = download(addr, songPath); dsErr != nil {
-					songStatus = "Download Failed"
+				if res.SongErr = download(addr, songPath); res.SongErr != nil {
+					res.Song = "Download Failed"
+				} else {
+					songCount++
 				}
 			} else {
-				songStatus = "Already Exists"
+				res.Song = "Already Exists"
 			}
 
 			if _, err := os.Stat(lyricPath); os.IsNotExist(err) {
-				lyric, trans, dlErr := cli.GetSongLyric(s.Songmid)
-				if dlErr != nil {
-					lyricStatus = "Download Failed"
+				lyric, trans, err := cli.GetSongLyric(s.Songmid)
+				if err != nil {
+					res.Lyric = "Download Failed"
+					res.LyricErr = err
 				} else {
-					if dlErr = os.WriteFile(lyricPath, lyric, os.ModePerm); dlErr != nil {
-						lyricStatus = "Write Failed"
+					lyric = bytes.ReplaceAll(lyric, []byte("&apos;"), []byte("'"))
+					lyric = bytes.ReplaceAll(lyric, []byte("&quot;"), []byte("\""))
+					lyric = bytes.ReplaceAll(lyric, []byte("&nbsp;"), []byte(" "))
+					if err := os.WriteFile(lyricPath, lyric, os.ModePerm); err != nil {
+						res.Lyric = "Write Failed"
+						res.LyricErr = err
+					} else {
+						lyricCount++
 					}
 					if len(trans) > 0 {
+						trans = bytes.ReplaceAll(trans, []byte("&apos;"), []byte("'"))
+						trans = bytes.ReplaceAll(trans, []byte("&quot;"), []byte("\""))
+						trans = bytes.ReplaceAll(trans, []byte("&nbsp;"), []byte(" "))
 						os.WriteFile(lyricTransPath, trans, os.ModePerm)
 					}
 				}
 			} else {
-				lyricStatus = "Already Exists"
+				res.Lyric = "Already Exists"
+			}
+
+			if res.SongErr == nil && res.LyricErr == nil && silent {
+				continue
 			}
 
 			// Stdout Print
-			if dsErr != nil {
-				fmt.Println(nameBuilder.String(), "\tSong: ", songStatus, "\tError:", dsErr)
+			fmt.Print(songname, " [ ")
+			if res.SongErr != nil {
+				fmt.Printf("Song: %s, Error: %s", log.SError(res.Song), log.SError(res.SongErr.Error()))
 			} else {
-				fmt.Println(nameBuilder.String(), "\tSong: ", songStatus)
+				fmt.Printf("Song: %s", log.SOK(res.Song))
 			}
 
-			if dlErr != nil {
-				fmt.Println(nameBuilder.String(), "\tLyric: ", lyricStatus, "\tError:", dlErr)
-			} else {
-				fmt.Println(nameBuilder.String(), "\tLyric: ", lyricStatus)
-			}
+			fmt.Print(", ")
 
-			if songStatus != "Already Exists" || lyricStatus != "Already Exists" {
+			if res.LyricErr != nil {
+				fmt.Printf("Lyric: %s, Error: %s", log.SError(res.Lyric), log.SError(res.LyricErr.Error()))
+			} else {
+				fmt.Printf("Lyric: %s", log.SOK(res.Lyric))
+			}
+			fmt.Println(" ]")
+
+			if res.Song != "Already Exists" || res.Lyric != "Already Exists" {
 				time.Sleep(time.Duration(2+rand.Intn(3)) * time.Second)
 			}
 		}
 	}
+	return
 }
 
 func download(url string, filepath string) (err error) {

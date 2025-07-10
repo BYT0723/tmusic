@@ -36,5 +36,5 @@ func init() {
 	// is called directly, e.g.:
 	// qqmusicCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 
-	qqmusicCmd.PersistentFlags().StringVarP(&cookiePath, "cookie", "c", "./cookie.txt", "cookie filepath")
+	qqmusicCmd.PersistentFlags().StringVarP(&cookiePath, "cookie", "c", "./qqmusic-cookie.txt", "cookie filepath")
 }
