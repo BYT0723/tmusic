@@ -17,13 +17,8 @@ import (
 // mpdGenCmd represents the mpdGen command
 var mpdGenCmd = &cobra.Command{
 	Use:   "mpd-gen",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Short: "generate mpd playlist from music directory",
+	Long:  `generate mpd playlist from music directory`,
 	Run: func(cmd *cobra.Command, args []string) {
 		generateMpdPlaylists()
 	},
