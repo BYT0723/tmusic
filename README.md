@@ -6,3 +6,30 @@ A Go-based music tool
 
 本人正在使用Linux, Linux本机与QQMusic的联动可以说是非常烂，让我不得不使用MPD，但是我长期在移动端使用QQMusic, 我的许多歌单和歌曲都在QQMusic的云端，
 故此写此工具用于将歌单同步到本地, 此前也用NodeJS实现过一版[music-downloader](https://github.com/BYT0723/music-downloader)，但是依赖NodeJS。
+
+## Usage
+
+### 同步QQMusic自建歌单到本地
+
+默认歌曲存放到`./songs`, 歌词则`./lyrics`
+
+```shell
+tmusic qqmusic sync -c <cookie_file>
+
+# 过滤正常日志输出
+tmusic qqmusic sync -c <cookie_file> -s
+
+# 指定目录
+tmusic qqmusic sync -c <cookie_file> --song-dir $HOME/Music --lyric-dir $HOME/Music/.lyrics
+```
+
+### 生成MPD Playlist
+
+默认使用`$HOME/Music`生成Playlist到`$HOME/.mpd/playlists/`, 会过滤非`m4a`,`mp3`,`flac`文件
+
+```shell
+tmusic mpd-gen
+
+# 指定目录
+tmusic mpd-gen -m $HOME/Music -p $HOME/.mpd/playlists
+```
