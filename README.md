@@ -11,6 +11,8 @@ A Go-based music tool
 
 ### 同步QQMusic自建歌单到本地
 
+使用时需要QQMusic Cookie, 你可把cookie写入`./qqmusic-cookie.txt`或者`-c <cookie_file>`去指定cookie文件
+
 默认歌曲存放到`./songs`, 歌词则`./lyrics`
 
 ```shell
