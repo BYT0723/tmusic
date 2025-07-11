@@ -13,7 +13,7 @@ A Go-based music tool
 
 使用时需要QQMusic Cookie, 你可把cookie写入`./qqmusic-cookie.txt`或者`-c <cookie_file>`去指定cookie文件
 
-默认歌曲存放到`./songs`, 歌词则`./lyrics`
+默认歌曲存放到`$HOME/Music`, 歌词则`$HOME/Music/.lyrics`
 
 ```shell
 tmusic qqmusic sync -c <cookie_file>
@@ -23,15 +23,10 @@ tmusic qqmusic sync -c <cookie_file> -s
 
 # 指定目录
 tmusic qqmusic sync -c <cookie_file> --song-dir $HOME/Music --lyric-dir $HOME/Music/.lyrics
-```
 
-### 生成MPD Playlist
+# 生成MPD Playlist
+tmusic qqmusic sync -c <cookie_file> -g
 
-默认使用`$HOME/Music`生成Playlist到`$HOME/.mpd/playlists/`, 会过滤非`m4a`,`mp3`,`flac`文件
-
-```shell
-tmusic mpd-gen
-
-# 指定目录
-tmusic mpd-gen -m $HOME/Music -p $HOME/.mpd/playlists
+# 指定Playlist Path
+tmusic qqmusic sync -c <cookie_file> -g --mpd-playlist <path>
 ```

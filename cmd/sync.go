@@ -38,9 +38,8 @@ var syncCmd = &cobra.Command{
 }
 
 var (
-	songDir  string
-	lyricDir string
-	silent   bool
+	songDir, lyricDir, mpdPlaylistDir string
+	silent, genMpdPlaylist            bool
 )
 
 func init() {
@@ -56,9 +55,13 @@ func init() {
 	// is called directly, e.g.:
 	// syncCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 
-	syncCmd.PersistentFlags().StringVar(&songDir, "song-dir", "./songs", "歌曲目录")
-	syncCmd.PersistentFlags().StringVar(&lyricDir, "lyric-dir", "./lyrics", "歌词目录")
+	home, _ := os.UserHomeDir()
+
+	syncCmd.PersistentFlags().StringVar(&songDir, "song", filepath.Join(home, "Music"), "歌曲目录")
+	syncCmd.PersistentFlags().StringVar(&lyricDir, "lyric", filepath.Join(home, "Music", ".lyrics"), "歌词目录")
+	syncCmd.PersistentFlags().StringVar(&mpdPlaylistDir, "mpd-playlist", filepath.Join(home, ".mpd", "playlists"), "MPD Playlist Directory")
 	syncCmd.PersistentFlags().BoolVarP(&silent, "silent", "s", false, "是否静默模式")
+	syncCmd.PersistentFlags().BoolVarP(&genMpdPlaylist, "gen-mpd-playlist", "g", false, "是否生成MPD播放列表")
 }
 
 func syncUserSongList(cli *qqmusic.Client, songDir string, lyricDir string) {
@@ -79,12 +82,12 @@ func syncUserSongList(cli *qqmusic.Client, songDir string, lyricDir string) {
 
 	for _, d := range sl.DissList {
 		if d.DirShow != 0 {
-			downloadDiss(*cli, d)
+			syncDiss(*cli, d)
 		}
 	}
 }
 
-func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int) {
+func syncDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int) {
 	l, err := cli.GetSongList(d.Tid)
 	if err != nil {
 		log.Errorf("%s 歌单获取失败: %v\n", d.DissName, err)
@@ -107,7 +110,10 @@ func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount
 		LyricErr error  `json:"lyric_err,omitempty"`
 	}
 
+	m3u := map[string]*bytes.Buffer{}
+
 	for _, v := range l.Cdlist {
+		m3u[v.Dissname] = bytes.NewBuffer(make([]byte, 0, 1024))
 		for _, s := range v.Songlist {
 			var (
 				nameBuilder strings.Builder
@@ -148,6 +154,7 @@ func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount
 
 				if res.SongErr = download(addr, songPath); res.SongErr != nil {
 					res.Song = "Download Failed"
+					os.Remove(songPath)
 				} else {
 					songCount++
 				}
@@ -181,29 +188,46 @@ func downloadDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount
 				res.Lyric = "Already Exists"
 			}
 
-			if res.SongErr == nil && res.LyricErr == nil && silent {
-				continue
-			}
+			var (
+				errFlag    = res.SongErr != nil || res.LyricErr != nil
+				str1, str2 string
+			)
 
 			// Stdout Print
-			fmt.Print(songname, " [ ")
 			if res.SongErr != nil {
-				fmt.Printf("Song: %s, Error: %s", log.SError(res.Song), log.SError(res.SongErr.Error()))
+				str1 = fmt.Sprintf("Song: %s, Error: %v", res.Song, res.SongErr)
 			} else {
-				fmt.Printf("Song: %s", log.SOK(res.Song))
+				m3u[v.Dissname].WriteString(filepath.Join(v.Dissname, songname+st.Suffix()))
+				m3u[v.Dissname].WriteByte('\n')
+				str1 = fmt.Sprintf("Song: %s", res.Song)
 			}
-
-			fmt.Print(", ")
 
 			if res.LyricErr != nil {
-				fmt.Printf("Lyric: %s, Error: %s", log.SError(res.Lyric), log.SError(res.LyricErr.Error()))
+				str2 = fmt.Sprintf("Lyric: %s, Error: %v", res.Lyric, res.LyricErr)
 			} else {
-				fmt.Printf("Lyric: %s", log.SOK(res.Lyric))
+				str2 = fmt.Sprintf("Lyric: %s", res.Lyric)
 			}
-			fmt.Println(" ]")
+
+			if errFlag {
+				log.Errorf("%s ===> [ %s, %s ]\n", songname, str1, str2)
+			} else if !silent {
+				log.OKf("%s ===> [ %s, %s ]\n", songname, str1, str2)
+			}
 
 			if res.Song != "Already Exists" || res.Lyric != "Already Exists" {
 				time.Sleep(time.Duration(2+rand.Intn(3)) * time.Second)
+			}
+		}
+	}
+	if genMpdPlaylist {
+		if err := os.MkdirAll(mpdPlaylistDir, os.ModePerm); err != nil {
+			fmt.Printf("mpdPlaylistDir: %v\n", mpdPlaylistDir)
+			log.Errorf("无法创建目录 %s : %v\n", mpdPlaylistDir, err)
+			os.Exit(1)
+		}
+		for name, bs := range m3u {
+			if err := os.WriteFile(filepath.Join(mpdPlaylistDir, fmt.Sprintf("%s.m3u", name)), bs.Bytes(), os.ModePerm); err != nil {
+				log.Errorf("%s.m3u 写入失败: %v\n", name, err)
 			}
 		}
 	}
