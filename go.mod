@@ -3,7 +3,7 @@ module github.com/BYT0723/tmusic
 go 1.24.4
 
 require (
-	github.com/BYT0723/apix v0.0.0-20250711144517-f89600de3a56
+	github.com/BYT0723/apix v0.0.0-20250806091504-f6a07e0dc9f4
 	github.com/spf13/cobra v1.9.1
 )
 
