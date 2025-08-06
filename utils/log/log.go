@@ -8,7 +8,7 @@ const (
 	Green = "\033[32m"
 )
 
-func Errorf(format string, args ...interface{}) {
+func Errorf(format string, args ...any) {
 	fmt.Printf(Red+format+Reset, args...)
 }
 
@@ -16,10 +16,10 @@ func SError(msg string) string {
 	return Red + msg + Reset
 }
 
-func OKf(format string, args ...interface{}) {
+func Infof(format string, args ...any) {
 	fmt.Printf(Green+format+Reset, args...)
 }
 
-func SOK(msg string) string {
+func SInfo(msg string) string {
 	return Green + msg + Reset
 }
