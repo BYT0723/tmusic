@@ -6,7 +6,9 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/BYT0723/apix/qqmusic"
 	"github.com/BYT0723/tmusic/utils"
 	"github.com/BYT0723/tmusic/utils/log"
+	"github.com/bogem/id3v2"
 	"github.com/spf13/cobra"
 )
 
@@ -47,8 +50,8 @@ var (
 )
 
 var (
-	songDir, lyricDir, mpdPlaylistDir string
-	silent, genMpdPlaylist            bool
+	songDir, lyricDir, mpdPlaylistDir  string
+	silent, genMpdPlaylist, noEmbedArt bool
 )
 
 func init() {
@@ -76,6 +79,7 @@ func init() {
 	qqmusicSyncCmd.PersistentFlags().StringVar(&mpdPlaylistDir, "mpd-playlist", filepath.Join(home, ".mpd", "playlists"), "MPD Playlist Directory")
 	qqmusicSyncCmd.PersistentFlags().BoolVarP(&silent, "silent", "s", false, "是否静默模式")
 	qqmusicSyncCmd.PersistentFlags().BoolVarP(&genMpdPlaylist, "gen-mpd-playlist", "g", false, "是否生成MPD播放列表")
+	qqmusicSyncCmd.PersistentFlags().BoolVar(&noEmbedArt, "no-art", false, "不嵌入专辑封面")
 }
 
 func syncUserSongList(cli *qqmusic.Client, songDir string, lyricDir string) {
@@ -96,12 +100,12 @@ func syncUserSongList(cli *qqmusic.Client, songDir string, lyricDir string) {
 
 	for _, d := range sl.DissList {
 		if d.DirShow != 0 {
-			syncDiss(*cli, d)
+			syncDiss(cli, d)
 		}
 	}
 }
 
-func syncDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int) {
+func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int) {
 	l, err := cli.GetSongList(d.Tid)
 	if err != nil {
 		log.Errorf("%s 歌单获取失败: %v\n", d.DissName, err)
@@ -159,6 +163,7 @@ func syncDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int
 			lyricPath = filepath.Join(lyricDir, songname+".lrc")
 			lyricTransPath = filepath.Join(lyricDir, songname+"_trans.lrc")
 
+			// 下载歌曲
 			if _, err := os.Stat(songPath); os.IsNotExist(err) {
 				addr, err := cli.GetSongUrl(s.Songmid, s.StrMediaMid, st)
 				if err != nil {
@@ -176,6 +181,15 @@ func syncDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int
 				res.Song = "Already Exists"
 			}
 
+			if !noEmbedArt {
+				if err := embedAlbumArt(cli, s.Songmid, songPath, false); err != nil {
+					log.Errorf("%s 封面嵌入失败: %v\n", songPath, err)
+				} else {
+					log.Infof("%s 封面嵌入成功.\n", songPath)
+				}
+			}
+
+			// 下载歌词
 			if _, err := os.Stat(lyricPath); os.IsNotExist(err) {
 				lyric, trans, err := cli.GetSongLyric(s.Songmid)
 				if err != nil {
@@ -248,4 +262,46 @@ func syncDiss(cli qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int
 		}
 	}
 	return
+}
+
+func embedAlbumArt(cli *qqmusic.Client, songmid, songpath string, override bool) error {
+	// 打开 MP3 文件的 ID3v2 标签
+	tag, err := id3v2.Open(songpath, id3v2.Options{Parse: true})
+	if err != nil {
+		return err
+	}
+	defer tag.Close()
+
+	// 获取所有的 APIC 帧（封面图片）
+	pics := tag.GetFrames(tag.CommonID("Attached picture"))
+	if len(pics) != 0 && !override {
+		return nil
+	}
+
+	artURL, err := cli.GetAlbumArtBySongMid(songmid)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.Get(artURL)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	cover, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	// 添加封面到 APIC 帧
+	tag.AddAttachedPicture(id3v2.PictureFrame{
+		Encoding:    id3v2.EncodingUTF8,
+		MimeType:    "image/jpeg", // 或 "image/png"
+		PictureType: id3v2.PTFrontCover,
+		Description: "Cover",
+		Picture:     cover,
+	})
+
+	return tag.Save()
 }
