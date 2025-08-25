@@ -5,12 +5,14 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,8 +22,6 @@ import (
 	"github.com/bogem/id3v2"
 	"github.com/spf13/cobra"
 )
-
-var cookiePath string
 
 // qqmusicCmd represents the qqmusic command
 var (
@@ -49,9 +49,14 @@ var (
 	}
 )
 
+var ErrAblumArtAlreadyExists = fmt.Errorf("album art already exists")
+
 var (
-	songDir, lyricDir, mpdPlaylistDir  string
-	silent, genMpdPlaylist, noEmbedArt bool
+	cookiePath                                     string
+	songDir, lyricDir, mpdPlaylistDir              string
+	silent, genMpdPlaylist, noEmbedArt, lyricTrans bool
+	reTi                                           = regexp.MustCompile(`(?m)^\[ti:.*\]`)
+	reAr                                           = regexp.MustCompile(`(?m)^\[ar:.*\]`)
 )
 
 func init() {
@@ -76,6 +81,7 @@ func init() {
 	// qqmusic sync flags
 	qqmusicSyncCmd.PersistentFlags().StringVar(&songDir, "song", filepath.Join(home, "Music"), "歌曲目录")
 	qqmusicSyncCmd.PersistentFlags().StringVar(&lyricDir, "lyric", filepath.Join(home, "Music", ".lyrics"), "歌词目录")
+	qqmusicSyncCmd.PersistentFlags().BoolVar(&lyricTrans, "lyric-trans", false, "是否下载翻译歌词")
 	qqmusicSyncCmd.PersistentFlags().StringVar(&mpdPlaylistDir, "mpd-playlist", filepath.Join(home, ".mpd", "playlists"), "MPD Playlist Directory")
 	qqmusicSyncCmd.PersistentFlags().BoolVarP(&silent, "silent", "s", false, "是否静默模式")
 	qqmusicSyncCmd.PersistentFlags().BoolVarP(&genMpdPlaylist, "gen-mpd-playlist", "g", false, "是否生成MPD播放列表")
@@ -183,7 +189,9 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 
 			if !noEmbedArt {
 				if err := embedAlbumArt(cli, s.Songmid, songPath, false); err != nil {
-					log.Errorf("%s 封面嵌入失败: %v\n", songPath, err)
+					if !errors.Is(err, ErrAblumArtAlreadyExists) {
+						log.Errorf("%s 封面嵌入失败: %v\n", songPath, err)
+					}
 				} else {
 					log.Infof("%s 封面嵌入成功.\n", songPath)
 				}
@@ -196,21 +204,37 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 					res.Lyric = "Download Failed"
 					res.LyricErr = err
 				} else {
-					lyric = bytes.ReplaceAll(lyric, []byte("&apos;"), []byte("'"))
-					lyric = bytes.ReplaceAll(lyric, []byte("&quot;"), []byte("\""))
-					lyric = bytes.ReplaceAll(lyric, []byte("&nbsp;"), []byte(" "))
-					if err := os.WriteFile(lyricPath, lyric, os.ModePerm); err != nil {
-						res.Lyric = "Write Failed"
-						res.LyricErr = err
+					// 打开 MP3 文件
+					tag, err := id3v2.Open(songPath, id3v2.Options{Parse: true})
+					if err != nil {
+						log.Errorf("%s 打开 MP3 文件失败: %v", songPath, err)
 					} else {
-						lyricCount++
+						lyric = bytes.ReplaceAll(lyric, []byte("&apos;"), []byte("'"))
+						lyric = bytes.ReplaceAll(lyric, []byte("&quot;"), []byte("\""))
+						lyric = bytes.ReplaceAll(lyric, []byte("&nbsp;"), []byte(" "))
+
+						lyric = reTi.ReplaceAll(lyric, []byte("[ti:"+tag.Title()+"]"))
+						lyric = reAr.ReplaceAll(lyric, []byte("[ar:"+tag.Artist()+"]"))
+
+						if err := os.WriteFile(lyricPath, lyric, os.ModePerm); err != nil {
+							res.Lyric = "Write Failed"
+							res.LyricErr = err
+						} else {
+							lyricCount++
+						}
+
+						if len(trans) > 0 && lyricTrans {
+							trans = bytes.ReplaceAll(trans, []byte("&apos;"), []byte("'"))
+							trans = bytes.ReplaceAll(trans, []byte("&quot;"), []byte("\""))
+							trans = bytes.ReplaceAll(trans, []byte("&nbsp;"), []byte(" "))
+
+							trans = reTi.ReplaceAll(trans, []byte("[ti:"+tag.Title()+"]"))
+							trans = reAr.ReplaceAll(trans, []byte("[ar:"+tag.Artist()+"]"))
+
+							os.WriteFile(lyricTransPath, trans, os.ModePerm)
+						}
 					}
-					if len(trans) > 0 {
-						trans = bytes.ReplaceAll(trans, []byte("&apos;"), []byte("'"))
-						trans = bytes.ReplaceAll(trans, []byte("&quot;"), []byte("\""))
-						trans = bytes.ReplaceAll(trans, []byte("&nbsp;"), []byte(" "))
-						os.WriteFile(lyricTransPath, trans, os.ModePerm)
-					}
+
 				}
 			} else {
 				res.Lyric = "Already Exists"
@@ -275,7 +299,7 @@ func embedAlbumArt(cli *qqmusic.Client, songmid, songpath string, override bool)
 	// 获取所有的 APIC 帧（封面图片）
 	pics := tag.GetFrames(tag.CommonID("Attached picture"))
 	if len(pics) != 0 && !override {
-		return nil
+		return ErrAblumArtAlreadyExists
 	}
 
 	artURL, err := cli.GetAlbumArtBySongMid(songmid)
