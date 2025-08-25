@@ -57,6 +57,7 @@ var (
 	silent, genMpdPlaylist, noEmbedArt, lyricTrans bool
 	reTi                                           = regexp.MustCompile(`(?m)^\[ti:.*\]`)
 	reAr                                           = regexp.MustCompile(`(?m)^\[ar:.*\]`)
+	reAl                                           = regexp.MustCompile(`(?m)^\[al:.*\]`)
 )
 
 func init() {
@@ -188,12 +189,10 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			}
 
 			if !noEmbedArt {
-				if err := embedAlbumArt(cli, s.Songmid, songPath, false); err != nil {
+				if err := embedAlbumArt(cli, s.Albummid, songPath, false); err != nil {
 					if !errors.Is(err, ErrAblumArtAlreadyExists) {
 						log.Errorf("%s 封面嵌入失败: %v\n", songPath, err)
 					}
-				} else {
-					log.Infof("%s 封面嵌入成功.\n", songPath)
 				}
 			}
 
@@ -213,8 +212,10 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 						lyric = bytes.ReplaceAll(lyric, []byte("&quot;"), []byte("\""))
 						lyric = bytes.ReplaceAll(lyric, []byte("&nbsp;"), []byte(" "))
 
+						// PERF: 发现qqmusic存在歌词没有 titiel/artist/album tag导致rmpc无法匹配
 						lyric = reTi.ReplaceAll(lyric, []byte("[ti:"+tag.Title()+"]"))
 						lyric = reAr.ReplaceAll(lyric, []byte("[ar:"+tag.Artist()+"]"))
+						lyric = reAl.ReplaceAll(lyric, []byte("[al:"+tag.Album()+"]"))
 
 						if err := os.WriteFile(lyricPath, lyric, os.ModePerm); err != nil {
 							res.Lyric = "Write Failed"
@@ -228,8 +229,10 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 							trans = bytes.ReplaceAll(trans, []byte("&quot;"), []byte("\""))
 							trans = bytes.ReplaceAll(trans, []byte("&nbsp;"), []byte(" "))
 
+							// PERF: 发现qqmusic存在歌词没有 titiel/artist/album tag导致rmpc无法匹配
 							trans = reTi.ReplaceAll(trans, []byte("[ti:"+tag.Title()+"]"))
 							trans = reAr.ReplaceAll(trans, []byte("[ar:"+tag.Artist()+"]"))
+							trans = reAl.ReplaceAll(trans, []byte("[al:"+tag.Album()+"]"))
 
 							os.WriteFile(lyricTransPath, trans, os.ModePerm)
 						}
@@ -285,10 +288,11 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			}
 		}
 	}
+	wg.Wait()
 	return
 }
 
-func embedAlbumArt(cli *qqmusic.Client, songmid, songpath string, override bool) error {
+func embedAlbumArt(cli *qqmusic.Client, ablumid, songpath string, override bool) error {
 	// 打开 MP3 文件的 ID3v2 标签
 	tag, err := id3v2.Open(songpath, id3v2.Options{Parse: true})
 	if err != nil {
@@ -302,10 +306,7 @@ func embedAlbumArt(cli *qqmusic.Client, songmid, songpath string, override bool)
 		return ErrAblumArtAlreadyExists
 	}
 
-	artURL, err := cli.GetAlbumArtBySongMid(songmid)
-	if err != nil {
-		return err
-	}
+	artURL := fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", ablumid)
 
 	resp, err := http.Get(artURL)
 	if err != nil {
@@ -313,9 +314,16 @@ func embedAlbumArt(cli *qqmusic.Client, songmid, songpath string, override bool)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status code error: %d", resp.StatusCode)
+	}
+
 	cover, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
+	}
+	if len(cover) == 0 {
+		return errors.New("empty cover")
 	}
 
 	// 添加封面到 APIC 帧
