@@ -116,16 +116,16 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 	l, err := cli.GetSongList(d.Tid)
 	if err != nil {
 		log.Errorf("%s 歌单获取失败: %v\n", d.DissName, err)
-		return
+		return songCount, lyricCount
 	}
 	if len(l.Cdlist) == 0 {
-		return
+		return songCount, lyricCount
 	}
 
 	sdir := filepath.Join(songDir, d.DissName)
 	if err := os.MkdirAll(sdir, os.ModePerm); err != nil {
 		log.Errorf("歌单 %s 创建失败: %v\n", d.DissName, err)
-		return
+		return songCount, lyricCount
 	}
 
 	type result struct {
@@ -288,8 +288,7 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			}
 		}
 	}
-	wg.Wait()
-	return
+	return songCount, lyricCount
 }
 
 func embedAlbumArt(cli *qqmusic.Client, ablumid, songpath string, override bool) error {
