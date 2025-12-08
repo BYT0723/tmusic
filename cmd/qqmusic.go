@@ -129,10 +129,11 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 	}
 
 	type result struct {
-		Song     string `json:"song,omitempty"`
-		Lyric    string `json:"lyric,omitempty"`
-		SongErr  error  `json:"song_err,omitempty"`
-		LyricErr error  `json:"lyric_err,omitempty"`
+		Song     string   `json:"song,omitempty"`
+		Lyric    string   `json:"lyric,omitempty"`
+		SongErr  error    `json:"song_err,omitempty"`
+		LyricErr error    `json:"lyric_err,omitempty"`
+		Warn     []string `json:"warn,omitempty"`
 	}
 
 	m3u := map[string]*bytes.Buffer{}
@@ -172,10 +173,13 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 
 			// 下载歌曲
 			if _, err := os.Stat(songPath); os.IsNotExist(err) {
-				addr, err := cli.GetSongUrl(s.Songmid, s.StrMediaMid, st)
+				addr, rt, err := cli.GetSongUrl(s.Songmid, s.StrMediaMid, st)
 				if err != nil {
 					log.Errorf("%s 获取下载连接失败: %v\n", songname, err)
 					continue
+				}
+				if rt != st {
+					res.Warn = append(res.Warn, fmt.Sprintf("获取到歌曲类型为 %s, 非%s", rt, st))
 				}
 
 				if res.SongErr = utils.Download(addr, songPath); res.SongErr != nil {
