@@ -3,13 +3,13 @@ module github.com/BYT0723/tmusic
 go 1.24.4
 
 require (
-	github.com/BYT0723/apix v0.0.0-20251208131518-1c9e57c62770
+	github.com/BYT0723/apix v0.0.0-20251210175021-d5186ace95b1
 	github.com/bogem/id3v2 v1.2.0
 	github.com/spf13/cobra v1.9.1
 )
 
 require (
-	github.com/BYT0723/go-tools v0.0.34 // indirect
+	github.com/BYT0723/go-tools v0.0.35-0.20251210174817-b8f9b3203e31 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect

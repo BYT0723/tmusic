@@ -1,7 +1,7 @@
-github.com/BYT0723/apix v0.0.0-20251208131518-1c9e57c62770 h1:CdycjDQgYcrq9heQqtfpNt0OkjBm1C3eGMNLYI2PfUw=
-github.com/BYT0723/apix v0.0.0-20251208131518-1c9e57c62770/go.mod h1:9nWGfwIzVk6GhL2MG1G6TZpYONJQ/MY/333ncKglY0g=
-github.com/BYT0723/go-tools v0.0.34 h1:I4oPk2AfKV/spDmaLIXh4DV+GTIMP7kdi7c2wrQDmgA=
-github.com/BYT0723/go-tools v0.0.34/go.mod h1:cUIjTnFul0RC52Yes70k5z65vFpDmY58FGrT7V79CO4=
+github.com/BYT0723/apix v0.0.0-20251210175021-d5186ace95b1 h1:H8lfTG7L/lmwQH3Sy6xD7s+FKSCBOJ7m/SqcEOdMvPc=
+github.com/BYT0723/apix v0.0.0-20251210175021-d5186ace95b1/go.mod h1:7zqMnxGFutXZVr0yhI2pWjU+Lwx/j3SS3V5C1VcMjss=
+github.com/BYT0723/go-tools v0.0.35-0.20251210174817-b8f9b3203e31 h1:PbxSje52J9KHsbYbtG2G7NyExY7pyodMm1uW4QP5ekU=
+github.com/BYT0723/go-tools v0.0.35-0.20251210174817-b8f9b3203e31/go.mod h1:cUIjTnFul0RC52Yes70k5z65vFpDmY58FGrT7V79CO4=
 github.com/andybalholm/brotli v1.2.0 h1:ukwgCxwYrmACq68yiUqwIWnGY0cTPox/M94sVwToPjQ=
 github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/bogem/id3v2 v1.2.0 h1:hKDF+F1gOgQ5r1QmBCEZUk4MveJbKxCeIDSBU7CQ4oI=

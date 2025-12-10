@@ -55,9 +55,17 @@ var (
 	cookiePath                                     string
 	songDir, lyricDir, mpdPlaylistDir              string
 	silent, genMpdPlaylist, noEmbedArt, lyricTrans bool
-	reTi                                           = regexp.MustCompile(`(?m)^\[ti:.*\]`)
-	reAr                                           = regexp.MustCompile(`(?m)^\[ar:.*\]`)
-	reAl                                           = regexp.MustCompile(`(?m)^\[al:.*\]`)
+	defaultSongType                                = qqmusic.SongTypeFLAC
+	songTypes                                      = []qqmusic.SongType{
+		qqmusic.SongTypeFLAC,
+		qqmusic.SongTypeAPE,
+		qqmusic.SongType320,
+		qqmusic.SongType128,
+		qqmusic.SongTypeM4A,
+	}
+	reTi = regexp.MustCompile(`(?m)^\[ti:.*\]`)
+	reAr = regexp.MustCompile(`(?m)^\[ar:.*\]`)
+	reAl = regexp.MustCompile(`(?m)^\[al:.*\]`)
 )
 
 func init() {
@@ -129,11 +137,10 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 	}
 
 	type result struct {
-		Song     string   `json:"song,omitempty"`
-		Lyric    string   `json:"lyric,omitempty"`
-		SongErr  error    `json:"song_err,omitempty"`
-		LyricErr error    `json:"lyric_err,omitempty"`
-		Warn     []string `json:"warn,omitempty"`
+		Song     string `json:"song,omitempty"`
+		Lyric    string `json:"lyric,omitempty"`
+		SongErr  error  `json:"song_err,omitempty"`
+		LyricErr error  `json:"lyric_err,omitempty"`
 	}
 
 	m3u := map[string]*bytes.Buffer{}
@@ -144,10 +151,12 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			var (
 				nameBuilder strings.Builder
 
-				songname string
-				n        = len(s.Singer)
-				st       = qqmusic.SongType320
-				res      = result{
+				songname       string
+				songExists     bool
+				n              = len(s.Singer)
+				targetSongType = defaultSongType
+				dstSongType    qqmusic.SongType
+				res            = result{
 					Song:  "OK",
 					Lyric: "OK",
 				}
@@ -167,20 +176,28 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			songname = strings.ReplaceAll(nameBuilder.String(), "/", " ")
 			songname = strings.ReplaceAll(songname, "\\", " ")
 
-			songPath = filepath.Join(sdir, songname+st.Suffix())
+			songPath = filepath.Join(sdir, songname)
 			lyricPath = filepath.Join(lyricDir, songname+".lrc")
 			lyricTransPath = filepath.Join(lyricDir, songname+"_trans.lrc")
 
+			for _, t := range songTypes {
+				if _, err := os.Stat(songPath + t.Suffix()); err == nil {
+					songExists = true
+					dstSongType = t
+					songPath += dstSongType.Suffix()
+					break
+				}
+			}
+
 			// 下载歌曲
-			if _, err := os.Stat(songPath); os.IsNotExist(err) {
-				addr, rt, err := cli.GetSongUrl(s.Songmid, s.StrMediaMid, st)
+			if !songExists {
+				addr, rt, err := cli.GetSongUrl(s.Songmid, s.StrMediaMid, targetSongType)
 				if err != nil {
 					log.Errorf("%s 获取下载连接失败: %v\n", songname, err)
 					continue
 				}
-				if rt != st {
-					res.Warn = append(res.Warn, fmt.Sprintf("获取到歌曲类型为 %s, 非%s", rt, st))
-				}
+				dstSongType = rt
+				songPath += dstSongType.Suffix()
 
 				if res.SongErr = utils.Download(addr, songPath); res.SongErr != nil {
 					res.Song = "Download Failed"
@@ -195,7 +212,7 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			if !noEmbedArt {
 				if err := embedAlbumArt(cli, s.Albummid, songPath, false); err != nil {
 					if !errors.Is(err, ErrAblumArtAlreadyExists) {
-						log.Errorf("%s 封面嵌入失败: %v\n", songPath, err)
+						log.Errorf("%s 封面嵌入失败: %v\n", v.Dissname+"/"+songname+dstSongType.Suffix(), err)
 					}
 				}
 			}
@@ -256,7 +273,7 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			if res.SongErr != nil {
 				str1 = fmt.Sprintf("Song: %s, Error: %v", res.Song, res.SongErr)
 			} else {
-				m3u[v.Dissname].WriteString(filepath.Join(v.Dissname, songname+st.Suffix()))
+				m3u[v.Dissname].WriteString(filepath.Join(v.Dissname, songname+dstSongType.Suffix()))
 				m3u[v.Dissname].WriteByte('\n')
 				str1 = fmt.Sprintf("Song: %s", res.Song)
 			}
@@ -269,9 +286,9 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 
 			if !silent {
 				if errFlag {
-					log.Errorf("%s ===> [ %s, %s ]\n", songname, str1, str2)
+					log.Errorf("%s%s ===> [ %s, %s ]\n", songname, dstSongType.Suffix(), str1, str2)
 				} else if res.Song != "Already Exists" || res.Lyric != "Already Exists" {
-					log.Infof("%s ===> [ %s, %s ]\n", songname, str1, str2)
+					log.Infof("%s%s ===> [ %s, %s ]\n", songname, dstSongType.Suffix(), str1, str2)
 				}
 			}
 
