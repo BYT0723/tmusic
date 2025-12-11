@@ -212,7 +212,7 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			if !noEmbedArt {
 				if err := embedAlbumArt(cli, s.Albummid, songPath, false); err != nil {
 					if !errors.Is(err, ErrAblumArtAlreadyExists) {
-						log.Errorf("%s 封面嵌入失败: %v\n", v.Dissname+"/"+songname+dstSongType.Suffix(), err)
+						log.Warnf("%s 封面嵌入失败: %v\n", v.Dissname+"/"+songname+dstSongType.Suffix(), err)
 					}
 				}
 			}
