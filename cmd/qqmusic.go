@@ -49,7 +49,11 @@ var (
 	}
 )
 
-var ErrAblumArtAlreadyExists = fmt.Errorf("album art already exists")
+var (
+	ErrSongAlreayExists      = errors.New("song already exists")
+	ErrLryricAlreayExists    = errors.New("lyric already exists")
+	ErrAblumArtAlreadyExists = errors.New("album art already exists")
+)
 
 var (
 	cookiePath                                     string
@@ -120,196 +124,203 @@ func syncUserSongList(cli *qqmusic.Client, songDir string, lyricDir string) {
 	}
 }
 
+type SongContext struct {
+	DissName string
+	Song     qqmusic.Song
+
+	BaseName string
+	Artist   string
+
+	SongPath       string
+	LyricPath      string
+	LyricTransPath string
+
+	SongType qqmusic.SongType
+}
+
 func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int) {
 	l, err := cli.GetSongList(d.Tid)
-	if err != nil {
-		log.Errorf("%s 歌单获取失败: %v\n", d.DissName, err)
-		return songCount, lyricCount
-	}
-	if len(l.Cdlist) == 0 {
-		return songCount, lyricCount
+	if err != nil || len(l.Cdlist) == 0 {
+		log.Errorf("%s 歌单获取失败: %v", d.DissName, err)
+		return
 	}
 
 	sdir := filepath.Join(songDir, d.DissName)
 	if err := os.MkdirAll(sdir, os.ModePerm); err != nil {
-		log.Errorf("歌单 %s 创建失败: %v\n", d.DissName, err)
-		return songCount, lyricCount
+		log.Errorf("歌单 %s 创建失败: %v", d.DissName, err)
+		return
 	}
 
-	type result struct {
-		Song     string `json:"song,omitempty"`
-		Lyric    string `json:"lyric,omitempty"`
-		SongErr  error  `json:"song_err,omitempty"`
-		LyricErr error  `json:"lyric_err,omitempty"`
-	}
+	m3u := make(map[string]*bytes.Buffer)
 
-	m3u := map[string]*bytes.Buffer{}
+	for _, cd := range l.Cdlist {
+		buf := bytes.NewBuffer(make([]byte, 0, 1024))
 
-	for _, v := range l.Cdlist {
-		m3u[v.Dissname] = bytes.NewBuffer(make([]byte, 0, 1024))
-		for _, s := range v.Songlist {
-			var (
-				nameBuilder strings.Builder
+		for _, song := range cd.Songlist {
+			ctx := buildSongContext(sdir, cd.Dissname, song)
 
-				songname       string
-				songExists     bool
-				n              = len(s.Singer)
-				targetSongType = defaultSongType
-				dstSongType    qqmusic.SongType
-				res            = result{
-					Song:  "OK",
-					Lyric: "OK",
-				}
-				songPath, lyricPath, lyricTransPath string
-			)
+			songOK, songErr := handleSong(cli, ctx)
+			lyricOK, lyricErr := handleLyric(cli, ctx)
 
-			nameBuilder.WriteString(s.Songname)
-			nameBuilder.WriteString(" - ")
-
-			for i, s := range s.Singer {
-				nameBuilder.WriteString(s.Name)
-				if i < n-1 {
-					nameBuilder.WriteString(",")
-				}
+			if songOK {
+				appendM3U(buf, cd.Dissname, ctx)
+				songCount++
+			}
+			if lyricOK {
+				lyricCount++
 			}
 
-			songname = strings.ReplaceAll(nameBuilder.String(), "/", " ")
-			songname = strings.ReplaceAll(songname, "\\", " ")
+			logSongResult(ctx, songErr, lyricErr)
 
-			songPath = filepath.Join(sdir, songname)
-			lyricPath = filepath.Join(lyricDir, songname+".lrc")
-			lyricTransPath = filepath.Join(lyricDir, songname+"_trans.lrc")
-
-			for _, t := range songTypes {
-				if _, err := os.Stat(songPath + t.Suffix()); err == nil {
-					songExists = true
-					dstSongType = t
-					songPath += dstSongType.Suffix()
-					break
-				}
-			}
-
-			// 下载歌曲
-			if !songExists {
-				addr, rt, err := cli.GetSongUrl(s.Songmid, s.StrMediaMid, targetSongType)
-				if err != nil {
-					log.Errorf("%s 获取下载连接失败: %v\n", songname, err)
-					continue
-				}
-				dstSongType = rt
-				songPath += dstSongType.Suffix()
-
-				if res.SongErr = utils.Download(addr, songPath); res.SongErr != nil {
-					res.Song = "Download Failed"
-					os.Remove(songPath)
-				} else {
-					songCount++
-				}
-			} else {
-				res.Song = "Already Exists"
-			}
-
-			if !noEmbedArt {
-				if err := embedAlbumArt(cli, s.Albummid, songPath, false); err != nil {
-					if !errors.Is(err, ErrAblumArtAlreadyExists) {
-						log.Warnf("%s 封面嵌入失败: %v\n", v.Dissname+"/"+songname+dstSongType.Suffix(), err)
-					}
-				}
-			}
-
-			// 下载歌词
-			if _, err := os.Stat(lyricPath); os.IsNotExist(err) {
-				lyric, trans, err := cli.GetSongLyric(s.Songmid)
-				if err != nil {
-					res.Lyric = "Download Failed"
-					res.LyricErr = err
-				} else {
-					// 打开 MP3 文件
-					tag, err := id3v2.Open(songPath, id3v2.Options{Parse: true})
-					if err != nil {
-						log.Errorf("%s 打开 MP3 文件失败: %v", songPath, err)
-					} else {
-						lyric = bytes.ReplaceAll(lyric, []byte("&apos;"), []byte("'"))
-						lyric = bytes.ReplaceAll(lyric, []byte("&quot;"), []byte("\""))
-						lyric = bytes.ReplaceAll(lyric, []byte("&nbsp;"), []byte(" "))
-
-						// PERF: 发现qqmusic存在歌词没有 titiel/artist/album tag导致rmpc无法匹配
-						lyric = reTi.ReplaceAll(lyric, []byte("[ti:"+tag.Title()+"]"))
-						lyric = reAr.ReplaceAll(lyric, []byte("[ar:"+tag.Artist()+"]"))
-						lyric = reAl.ReplaceAll(lyric, []byte("[al:"+tag.Album()+"]"))
-
-						if err := os.WriteFile(lyricPath, lyric, os.ModePerm); err != nil {
-							res.Lyric = "Write Failed"
-							res.LyricErr = err
-						} else {
-							lyricCount++
-						}
-
-						if len(trans) > 0 && lyricTrans {
-							trans = bytes.ReplaceAll(trans, []byte("&apos;"), []byte("'"))
-							trans = bytes.ReplaceAll(trans, []byte("&quot;"), []byte("\""))
-							trans = bytes.ReplaceAll(trans, []byte("&nbsp;"), []byte(" "))
-
-							// PERF: 发现qqmusic存在歌词没有 titiel/artist/album tag导致rmpc无法匹配
-							trans = reTi.ReplaceAll(trans, []byte("[ti:"+tag.Title()+"]"))
-							trans = reAr.ReplaceAll(trans, []byte("[ar:"+tag.Artist()+"]"))
-							trans = reAl.ReplaceAll(trans, []byte("[al:"+tag.Album()+"]"))
-
-							os.WriteFile(lyricTransPath, trans, os.ModePerm)
-						}
-					}
-
-				}
-			} else {
-				res.Lyric = "Already Exists"
-			}
-
-			var (
-				errFlag    = res.SongErr != nil || res.LyricErr != nil
-				str1, str2 string
-			)
-
-			// Stdout Print
-			if res.SongErr != nil {
-				str1 = fmt.Sprintf("Song: %s, Error: %v", res.Song, res.SongErr)
-			} else {
-				m3u[v.Dissname].WriteString(filepath.Join(v.Dissname, songname+dstSongType.Suffix()))
-				m3u[v.Dissname].WriteByte('\n')
-				str1 = fmt.Sprintf("Song: %s", res.Song)
-			}
-
-			if res.LyricErr != nil {
-				str2 = fmt.Sprintf("Lyric: %s, Error: %v", res.Lyric, res.LyricErr)
-			} else {
-				str2 = fmt.Sprintf("Lyric: %s", res.Lyric)
-			}
-
-			if !silent {
-				if errFlag {
-					log.Errorf("%s%s ===> [ %s, %s ]\n", songname, dstSongType.Suffix(), str1, str2)
-				} else if res.Song != "Already Exists" || res.Lyric != "Already Exists" {
-					log.Infof("%s%s ===> [ %s, %s ]\n", songname, dstSongType.Suffix(), str1, str2)
-				}
-			}
-
-			if res.Song != "Already Exists" || res.Lyric != "Already Exists" {
-				time.Sleep(time.Duration(1+rand.Intn(2)) * time.Second)
+			if songOK || lyricOK {
+				sleepRandom()
 			}
 		}
+
+		m3u[cd.Dissname] = buf
 	}
+
 	if genMpdPlaylist {
-		if err := os.MkdirAll(mpdPlaylistDir, os.ModePerm); err != nil {
-			fmt.Printf("mpdPlaylistDir: %v\n", mpdPlaylistDir)
-			log.Errorf("无法创建目录 %s : %v\n", mpdPlaylistDir, err)
-			os.Exit(1)
-		}
-		for name, bs := range m3u {
-			if err := os.WriteFile(filepath.Join(mpdPlaylistDir, fmt.Sprintf("%s.m3u", name)), bs.Bytes(), os.ModePerm); err != nil {
-				log.Errorf("%s.m3u 写入失败: %v\n", name, err)
-			}
+		writeM3UFiles(m3u)
+	}
+
+	return
+}
+
+func buildSongContext(baseDir, dissName string, s qqmusic.Song) *SongContext {
+	artists := make([]string, 0, len(s.Singer))
+	for _, a := range s.Singer {
+		artists = append(artists, a.Name)
+	}
+	artist := strings.Join(artists, ",")
+
+	base := fmt.Sprintf("%s - %s", s.Songname, artist)
+	base = strings.NewReplacer("/", " ", "\\", " ").Replace(base)
+
+	return &SongContext{
+		DissName: dissName,
+		Song:     s,
+		BaseName: base,
+		Artist:   artist,
+
+		SongPath:       filepath.Join(baseDir, base),
+		LyricPath:      filepath.Join(lyricDir, base+".lrc"),
+		LyricTransPath: filepath.Join(lyricDir, base+"_trans.lrc"),
+	}
+}
+
+func handleSong(cli *qqmusic.Client, ctx *SongContext) (bool, error) {
+	// 是否已存在
+	for _, t := range songTypes {
+		if _, err := os.Stat(ctx.SongPath + t.Suffix()); err == nil {
+			ctx.SongType = t
+			ctx.SongPath += t.Suffix()
+			return false, ErrSongAlreayExists
 		}
 	}
-	return songCount, lyricCount
+
+	addr, rt, err := cli.GetSongUrl(
+		ctx.Song.Songmid,
+		ctx.Song.StrMediaMid,
+		defaultSongType,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	ctx.SongType = rt
+	ctx.SongPath += rt.Suffix()
+
+	if err := utils.Download(addr, ctx.SongPath); err != nil {
+		_ = os.Remove(ctx.SongPath)
+		return false, err
+	}
+
+	if !noEmbedArt {
+		_ = embedAlbumArt(cli, ctx.Song.Albummid, ctx.SongPath, false)
+	}
+
+	return true, nil
+}
+
+func handleLyric(cli *qqmusic.Client, ctx *SongContext) (bool, error) {
+	if _, err := os.Stat(ctx.LyricPath); err == nil {
+		return false, ErrLryricAlreayExists
+	}
+
+	lyric, trans, err := cli.GetSongLyric(ctx.Song.Songmid)
+	if err != nil {
+		return false, err
+	}
+
+	tag, err := id3v2.Open(ctx.SongPath, id3v2.Options{Parse: true})
+	if err == nil {
+		defer tag.Close()
+	}
+
+	lyric = normalizeLyric(lyric, ctx.Song.Songname, ctx.Artist, ctx.Song.Albumname)
+	if err := os.WriteFile(ctx.LyricPath, lyric, os.ModePerm); err != nil {
+		return false, err
+	}
+
+	if lyricTrans && len(trans) > 0 && tag != nil {
+		trans = normalizeLyric(trans, tag.Title(), tag.Artist(), tag.Album())
+		_ = os.WriteFile(ctx.LyricTransPath, trans, os.ModePerm)
+	}
+
+	return true, nil
+}
+
+func appendM3U(buf *bytes.Buffer, dissName string, ctx *SongContext) {
+	buf.WriteString(filepath.Join(dissName, ctx.BaseName+ctx.SongType.Suffix()))
+	buf.WriteByte('\n')
+}
+
+func writeM3UFiles(m3u map[string]*bytes.Buffer) {
+	_ = os.MkdirAll(mpdPlaylistDir, os.ModePerm)
+	for name, buf := range m3u {
+		_ = os.WriteFile(
+			filepath.Join(mpdPlaylistDir, name+".m3u"),
+			buf.Bytes(),
+			os.ModePerm,
+		)
+	}
+}
+
+func normalizeLyric(bs []byte, title, artist, album string) []byte {
+	bs = bytes.ReplaceAll(bs, []byte("&apos;"), []byte("'"))
+	bs = bytes.ReplaceAll(bs, []byte("&quot;"), []byte("\""))
+	bs = bytes.ReplaceAll(bs, []byte("&nbsp;"), []byte(" "))
+
+	bs = reTi.ReplaceAll(bs, []byte("[ti:"+title+"]"))
+	bs = reAr.ReplaceAll(bs, []byte("[ar:"+artist+"]"))
+	bs = reAl.ReplaceAll(bs, []byte("[al:"+album+"]"))
+	return bs
+}
+
+func logSongResult(ctx *SongContext, songErr, lyricErr error) {
+	if silent {
+		return
+	}
+
+	songExist := songErr != nil && errors.Is(songErr, ErrSongAlreayExists)
+	lyricExist := lyricErr != nil && errors.Is(lyricErr, ErrLryricAlreayExists)
+	if songErr != nil || lyricErr != nil {
+		switch {
+		case songExist && lyricExist:
+		case !songExist || !lyricExist:
+			log.Errorf("%s ===> [ %s, %s ]\n", ctx.BaseName, songErr, lyricErr)
+
+		default:
+			log.Infof("%s%s ===> [ %s, %s ]\n", ctx.BaseName, ctx.SongType.Suffix(), songErr, lyricErr)
+		}
+	} else {
+		log.Infof("%s%s ===> OK\n", ctx.BaseName, ctx.SongType.Suffix())
+	}
+}
+
+func sleepRandom() {
+	time.Sleep(time.Duration(1+rand.Intn(2)) * time.Second)
 }
 
 func embedAlbumArt(cli *qqmusic.Client, ablumid, songpath string, override bool) error {
