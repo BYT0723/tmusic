@@ -162,11 +162,11 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 			songOK, songErr := handleSong(cli, ctx)
 			lyricOK, lyricErr := handleLyric(cli, ctx)
 
-			if songOK {
+			if songOK || errors.Is(songErr, ErrSongAlreayExists) {
 				appendM3U(buf, cd.Dissname, ctx)
 				songCount++
 			}
-			if lyricOK {
+			if lyricOK || errors.Is(lyricErr, ErrLryricAlreayExists) {
 				lyricCount++
 			}
 
