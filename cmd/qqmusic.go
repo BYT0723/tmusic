@@ -308,9 +308,10 @@ func logSongResult(ctx *SongContext, songErr, lyricErr error) {
 	if songErr != nil || lyricErr != nil {
 		switch {
 		case songExist && lyricExist:
-		case !songExist || !lyricExist:
+		case !songExist:
+			log.Errorf("%s ===> [ %s ]\n", ctx.BaseName, songErr)
+		case !lyricExist:
 			log.Errorf("%s ===> [ %s, %s ]\n", ctx.BaseName, songErr, lyricErr)
-
 		default:
 			log.Infof("%s%s ===> [ %s, %s ]\n", ctx.BaseName, ctx.SongType.Suffix(), songErr, lyricErr)
 		}
