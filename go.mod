@@ -3,7 +3,7 @@ module github.com/BYT0723/tmusic
 go 1.24.4
 
 require (
-	github.com/BYT0723/apix v0.0.0-20251210192900-4c4fc9a8a288
+	github.com/BYT0723/apix v0.0.0-20260217104806-92db94975bb8
 	github.com/bogem/id3v2 v1.2.0
 	github.com/dhowden/tag v0.0.0-20240417053706-3d75831295e8
 	github.com/go-flac/flacpicture/v2 v2.0.2

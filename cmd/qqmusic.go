@@ -7,9 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,10 +17,10 @@ import (
 	"github.com/BYT0723/apix/qqmusic"
 	"github.com/BYT0723/tmusic/utils"
 	"github.com/BYT0723/tmusic/utils/log"
-	"github.com/bogem/id3v2"
+	"github.com/BYT0723/tmusic/utils/song"
+	"github.com/BYT0723/tmusic/utils/song/flac"
+	"github.com/BYT0723/tmusic/utils/song/id3v2"
 	"github.com/dhowden/tag"
-	"github.com/go-flac/flacpicture/v2"
-	"github.com/go-flac/go-flac/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -253,6 +251,7 @@ func handleSong(cli *qqmusic.Client, ctx *SongContext) (err error) {
 		}
 	}
 
+	// read tag information insert to song context
 	{
 		f, err := os.Open(ctx.SongPath)
 		if err == nil {
@@ -266,94 +265,24 @@ func handleSong(cli *qqmusic.Client, ctx *SongContext) (err error) {
 		}
 	}
 
-	_ = songTagUpdate(ctx)
+	// Embed Cover Picture
+	var th song.TagHandler
+	switch ctx.SongType {
+	case qqmusic.SongTypeFLAC:
+		th = flac.CoverHandler{}
+	default:
+		th = id3v2.CoverHandler{}
+	}
+
+	if !th.CoverExist(ctx.SongPath) {
+		cover, err := cli.GetAlbumCover(ctx.Song.Albummid)
+		if err == nil {
+			_ = th.EmbedCover(ctx.SongPath, cover)
+		}
+	}
 
 	if !needDownload {
 		err = ErrSongAlreayExists
-	}
-	return
-}
-
-func songTagUpdate(ctx *SongContext) error {
-	switch ctx.SongType {
-	case qqmusic.SongTypeFLAC:
-		f, err := flac.ParseFile(ctx.SongPath)
-		if err == nil {
-			defer f.Close()
-
-			if !noEmbedArt {
-				coverExist := false
-				for _, mdb := range f.Meta {
-					if mdb.Type == flac.Picture {
-						coverExist = true
-						break
-					}
-				}
-
-				if !coverExist {
-					cover, err := downloadPicture(ctx)
-					if err == nil {
-						mbp, err := flacpicture.NewFromImageData(flacpicture.PictureTypeFrontCover, "Front cover", cover, "image/jpeg")
-						if err == nil {
-							mdb := mbp.Marshal()
-							f.Meta = append(f.Meta, &mdb)
-							f.Save(ctx.SongPath)
-						}
-					}
-				}
-			}
-		}
-	default:
-		// 打开 MP3 文件的 ID3v2 标签
-		t, err := id3v2.Open(ctx.SongPath, id3v2.Options{Parse: true})
-		if err != nil {
-			log.Errorf("open song tag err: %v\n", err)
-			return err
-		}
-		defer t.Close()
-
-		if !noEmbedArt {
-			// 获取所有的 APIC 帧（封面图片）
-			pics := t.GetFrames(t.CommonID("Attached picture"))
-			if len(pics) == 0 {
-				cover, err := downloadPicture(ctx)
-				if err == nil {
-					// 添加封面到 APIC 帧
-					t.AddAttachedPicture(id3v2.PictureFrame{
-						Encoding:    id3v2.EncodingUTF8,
-						MimeType:    "image/jpeg", // 或 "image/png"
-						PictureType: id3v2.PTFrontCover,
-						Description: "Front cover",
-						Picture:     cover,
-					})
-				}
-			}
-		}
-		return t.Save()
-	}
-	return nil
-}
-
-func downloadPicture(ctx *SongContext) (cover []byte, err error) {
-	artURL := fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", ctx.Song.Albummid)
-
-	resp, err := http.Get(artURL)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		err = errors.New("status code: " + resp.Status)
-		return
-	}
-
-	cover, err = io.ReadAll(resp.Body)
-	if err != nil {
-		return
-	}
-	if len(cover) == 0 {
-		err = errors.New("empty cover")
 	}
 	return
 }
