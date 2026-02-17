@@ -20,6 +20,9 @@ import (
 	"github.com/BYT0723/tmusic/utils"
 	"github.com/BYT0723/tmusic/utils/log"
 	"github.com/bogem/id3v2"
+	"github.com/dhowden/tag"
+	"github.com/go-flac/flacpicture/v2"
+	"github.com/go-flac/go-flac/v2"
 	"github.com/spf13/cobra"
 )
 
@@ -124,19 +127,27 @@ func syncUserSongList(cli *qqmusic.Client, songDir string, lyricDir string) {
 	}
 }
 
-type SongContext struct {
-	DissName string
-	Song     qqmusic.Song
+type (
+	SongContext struct {
+		DissName string
+		Song     qqmusic.Song
 
-	BaseName string
-	Artist   string
+		BaseName string
+		Artist   string
 
-	SongPath       string
-	LyricPath      string
-	LyricTransPath string
+		SongPath       string
+		SongTag        songTag
+		LyricPath      string
+		LyricTransPath string
 
-	SongType qqmusic.SongType
-}
+		SongType qqmusic.SongType
+	}
+	songTag struct {
+		Title  string
+		Artist string
+		Album  string
+	}
+)
 
 func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount int) {
 	l, err := cli.GetSongList(d.Tid)
@@ -159,14 +170,16 @@ func syncDiss(cli *qqmusic.Client, d qqmusic.Diss) (songCount int, lyricCount in
 		for _, song := range cd.Songlist {
 			ctx := buildSongContext(sdir, cd.Dissname, song)
 
-			songOK, songErr := handleSong(cli, ctx)
-			lyricOK, lyricErr := handleLyric(cli, ctx)
+			songErr := handleSong(cli, ctx)
+			lyricErr := handleLyric(cli, ctx)
+			songOK := songErr == nil || errors.Is(songErr, ErrSongAlreayExists)
+			lyricOK := lyricErr == nil || errors.Is(lyricErr, ErrLryricAlreayExists)
 
-			if songOK || errors.Is(songErr, ErrSongAlreayExists) {
+			if songOK {
 				appendM3U(buf, cd.Dissname, ctx)
 				songCount++
 			}
-			if lyricOK || errors.Is(lyricErr, ErrLryricAlreayExists) {
+			if lyricOK {
 				lyricCount++
 			}
 
@@ -209,66 +222,176 @@ func buildSongContext(baseDir, dissName string, s qqmusic.Song) *SongContext {
 	}
 }
 
-func handleSong(cli *qqmusic.Client, ctx *SongContext) (bool, error) {
+func handleSong(cli *qqmusic.Client, ctx *SongContext) (err error) {
 	// 是否已存在
+	needDownload := true
 	for _, t := range songTypes {
 		if _, err := os.Stat(ctx.SongPath + t.Suffix()); err == nil {
 			ctx.SongType = t
 			ctx.SongPath += t.Suffix()
-			return false, ErrSongAlreayExists
+			needDownload = false
+			break
 		}
 	}
 
-	addr, rt, err := cli.GetSongUrl(
-		ctx.Song.Songmid,
-		ctx.Song.StrMediaMid,
-		defaultSongType,
-	)
-	if err != nil {
-		return false, err
+	if needDownload {
+		addr, rt, err := cli.GetSongUrl(
+			ctx.Song.Songmid,
+			ctx.Song.StrMediaMid,
+			defaultSongType,
+		)
+		if err != nil {
+			return err
+		}
+
+		ctx.SongType = rt
+		ctx.SongPath += rt.Suffix()
+
+		if err := utils.Download(addr, ctx.SongPath); err != nil {
+			_ = os.Remove(ctx.SongPath)
+			return err
+		}
 	}
 
-	ctx.SongType = rt
-	ctx.SongPath += rt.Suffix()
-
-	if err := utils.Download(addr, ctx.SongPath); err != nil {
-		_ = os.Remove(ctx.SongPath)
-		return false, err
+	{
+		f, err := os.Open(ctx.SongPath)
+		if err == nil {
+			defer f.Close()
+			m, err := tag.ReadFrom(f)
+			if err == nil {
+				ctx.SongTag.Title = m.Title()
+				ctx.SongTag.Artist = m.Artist()
+				ctx.SongTag.Album = m.Album()
+			}
+		}
 	}
 
-	if !noEmbedArt {
-		_ = embedAlbumArt(cli, ctx.Song.Albummid, ctx.SongPath, false)
-	}
+	_ = songTagUpdate(ctx)
 
-	return true, nil
+	if !needDownload {
+		err = ErrSongAlreayExists
+	}
+	return
 }
 
-func handleLyric(cli *qqmusic.Client, ctx *SongContext) (bool, error) {
-	if _, err := os.Stat(ctx.LyricPath); err == nil {
-		return false, ErrLryricAlreayExists
-	}
+func songTagUpdate(ctx *SongContext) error {
+	switch ctx.SongType {
+	case qqmusic.SongTypeFLAC:
+		f, err := flac.ParseFile(ctx.SongPath)
+		if err == nil {
+			defer f.Close()
 
-	lyric, trans, err := cli.GetSongLyric(ctx.Song.Songmid)
+			if !noEmbedArt {
+				coverExist := false
+				for _, mdb := range f.Meta {
+					if mdb.Type == flac.Picture {
+						coverExist = true
+						break
+					}
+				}
+
+				if !coverExist {
+					cover, err := downloadPicture(ctx)
+					if err == nil {
+						mbp, err := flacpicture.NewFromImageData(flacpicture.PictureTypeFrontCover, "Front cover", cover, "image/jpeg")
+						if err == nil {
+							mdb := mbp.Marshal()
+							f.Meta = append(f.Meta, &mdb)
+							f.Save(ctx.SongPath)
+						}
+					}
+				}
+			}
+		}
+	default:
+		// 打开 MP3 文件的 ID3v2 标签
+		t, err := id3v2.Open(ctx.SongPath, id3v2.Options{Parse: true})
+		if err != nil {
+			log.Errorf("open song tag err: %v\n", err)
+			return err
+		}
+		defer t.Close()
+
+		if !noEmbedArt {
+			// 获取所有的 APIC 帧（封面图片）
+			pics := t.GetFrames(t.CommonID("Attached picture"))
+			if len(pics) == 0 {
+				cover, err := downloadPicture(ctx)
+				if err == nil {
+					// 添加封面到 APIC 帧
+					t.AddAttachedPicture(id3v2.PictureFrame{
+						Encoding:    id3v2.EncodingUTF8,
+						MimeType:    "image/jpeg", // 或 "image/png"
+						PictureType: id3v2.PTFrontCover,
+						Description: "Front cover",
+						Picture:     cover,
+					})
+				}
+			}
+		}
+		return t.Save()
+	}
+	return nil
+}
+
+func downloadPicture(ctx *SongContext) (cover []byte, err error) {
+	artURL := fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", ctx.Song.Albummid)
+
+	resp, err := http.Get(artURL)
 	if err != nil {
-		return false, err
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		err = errors.New("status code: " + resp.Status)
+		return
 	}
 
-	tag, err := id3v2.Open(ctx.SongPath, id3v2.Options{Parse: true})
-	if err == nil {
-		defer tag.Close()
+	cover, err = io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+	if len(cover) == 0 {
+		err = errors.New("empty cover")
+	}
+	return
+}
+
+func handleLyric(cli *qqmusic.Client, ctx *SongContext) (err error) {
+	needDownload := true
+	if _, err := os.Stat(ctx.LyricPath); err == nil {
+		needDownload = false
 	}
 
-	lyric = normalizeLyric(lyric, ctx.Song.Songname, ctx.Artist, ctx.Song.Albumname)
-	if err := os.WriteFile(ctx.LyricPath, lyric, os.ModePerm); err != nil {
-		return false, err
+	var lyric, trans []byte
+	if needDownload {
+		lyric, trans, err = cli.GetSongLyric(ctx.Song.Songmid)
+		if err != nil {
+			return
+		}
+	} else {
+		lyric, err = os.ReadFile(ctx.LyricPath)
+		if err != nil {
+			return
+		}
+		trans, err = os.ReadFile(ctx.LyricTransPath)
+		if err != nil && errors.Is(err, ErrLryricAlreayExists) {
+			return
+		}
 	}
 
-	if lyricTrans && len(trans) > 0 && tag != nil {
-		trans = normalizeLyric(trans, tag.Title(), tag.Artist(), tag.Album())
-		_ = os.WriteFile(ctx.LyricTransPath, trans, os.ModePerm)
+	if err = os.WriteFile(ctx.LyricPath, normalizeLyric(lyric, ctx.SongTag.Title, ctx.SongTag.Artist, ctx.SongTag.Album), os.ModePerm); err != nil {
+		return
 	}
 
-	return true, nil
+	if lyricTrans && len(trans) > 0 {
+		_ = os.WriteFile(ctx.LyricTransPath, normalizeLyric(lyric, ctx.SongTag.Title, ctx.SongTag.Artist, ctx.SongTag.Album), os.ModePerm)
+	}
+	if !needDownload {
+		err = ErrLryricAlreayExists
+	}
+	return
 }
 
 func appendM3U(buf *bytes.Buffer, dissName string, ctx *SongContext) {
@@ -299,73 +422,35 @@ func normalizeLyric(bs []byte, title, artist, album string) []byte {
 }
 
 func logSongResult(ctx *SongContext, songErr, lyricErr error) {
-	if silent {
+	if silent || (errors.Is(songErr, ErrSongAlreayExists) && errors.Is(lyricErr, ErrLryricAlreayExists)) {
 		return
 	}
 
-	songExist := songErr != nil && errors.Is(songErr, ErrSongAlreayExists)
-	lyricExist := lyricErr != nil && errors.Is(lyricErr, ErrLryricAlreayExists)
-	if songErr != nil || lyricErr != nil {
-		switch {
-		case songExist && lyricExist:
-		case !songExist:
-			log.Errorf("%s ===> [ %s ]\n", ctx.BaseName, songErr)
-		case !lyricExist:
-			log.Errorf("%s ===> [ %s, %s ]\n", ctx.BaseName, songErr, lyricErr)
-		default:
-			log.Infof("%s%s ===> [ %s, %s ]\n", ctx.BaseName, ctx.SongType.Suffix(), songErr, lyricErr)
+	level, song, lyric := "info", "OK", "OK"
+	if songErr != nil {
+		if errors.Is(songErr, ErrSongAlreayExists) {
+			song = "already exists"
+		} else {
+			level = "error"
+			song = songErr.Error()
 		}
+	}
+	if lyricErr != nil {
+		if errors.Is(lyricErr, ErrLryricAlreayExists) {
+			lyric = "already exists"
+		} else {
+			level = "error"
+			lyric = lyricErr.Error()
+		}
+	}
+
+	if level == "error" {
+		log.Errorf("%s ===> [ %s, %s ]\n", ctx.BaseName, song, lyric)
 	} else {
-		log.Infof("%s%s ===> OK\n", ctx.BaseName, ctx.SongType.Suffix())
+		log.Infof("%s%s ===> [ %s, %s ]\n", ctx.BaseName, ctx.SongType.Suffix(), song, lyric)
 	}
 }
 
 func sleepRandom() {
 	time.Sleep(time.Duration(1+rand.Intn(2)) * time.Second)
-}
-
-func embedAlbumArt(cli *qqmusic.Client, ablumid, songpath string, override bool) error {
-	// 打开 MP3 文件的 ID3v2 标签
-	tag, err := id3v2.Open(songpath, id3v2.Options{Parse: true})
-	if err != nil {
-		return err
-	}
-	defer tag.Close()
-
-	// 获取所有的 APIC 帧（封面图片）
-	pics := tag.GetFrames(tag.CommonID("Attached picture"))
-	if len(pics) != 0 && !override {
-		return ErrAblumArtAlreadyExists
-	}
-
-	artURL := fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", ablumid)
-
-	resp, err := http.Get(artURL)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status code error: %d", resp.StatusCode)
-	}
-
-	cover, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	if len(cover) == 0 {
-		return errors.New("empty cover")
-	}
-
-	// 添加封面到 APIC 帧
-	tag.AddAttachedPicture(id3v2.PictureFrame{
-		Encoding:    id3v2.EncodingUTF8,
-		MimeType:    "image/jpeg", // 或 "image/png"
-		PictureType: id3v2.PTFrontCover,
-		Description: "Cover",
-		Picture:     cover,
-	})
-
-	return tag.Save()
 }
